@@ -101,6 +101,33 @@ NOTES_BOOST="${DEFAULT_NOTES_BOOST}"
 ALLOW_FINETUNE="${DEFAULT_ALLOW_FINETUNE}"
 FINETUNE_BASE="${DEFAULT_FINETUNE_BASE}"
 API_PORT="${DEFAULT_API_PORT}"
+EMBED_DIM=""
+
+declare -A EMBED_MODEL_DIM_MAP=(
+  ["text-embedding-3-small"]="1536"
+  ["text-embedding-3-large"]="3072"
+  ["text-embedding-3-large-lite"]="3072"
+  ["text-embedding-ada-002"]="1536"
+  ["text-search-ada-001"]="1024"
+  ["text-search-ada-doc-001"]="1024"
+  ["text-similarity-ada-001"]="1024"
+)
+
+resolve_embed_dim(){
+  local model="$1"
+  local dim="${EMBED_MODEL_DIM_MAP[$model]:-}"
+  if [[ -n "$dim" ]]; then
+    printf '%s\n' "$dim"
+    return 0
+  fi
+  printf '[Aviso] Dimensão desconhecida para EMBED_MODEL="%s". Assumindo 1536.\n' "$model" >&2
+  printf '1536\n'
+}
+
+ensure_embed_dim(){
+  local model="${1:-${EMBED_MODEL:-${DEFAULT_EMBED_MODEL}}}"
+  EMBED_DIM="$(resolve_embed_dim "$model")"
+}
 
 #============================== UI (dialog/whiptail) =========================#
 need_root(){ [[ $EUID -eq 0 ]] || { echo "Execute como root: sudo $0"; exit 1; }; }
@@ -322,6 +349,7 @@ cfg_wizard(){
 write_files(){
   mkdir -p "${INITDB_DIR}" "${PGDATA_DIR}" "${APP_DIR}" "${SESS_DIR}" "${FINETUNE_DIR}" "${APP_DIR}/analyzers"
   chmod -R 755 "${BASE_DIR}"
+  ensure_embed_dim "${EMBED_MODEL}"
 
   cat > "${BASE_DIR}/docker-compose.yml" <<YAML
 services:
@@ -339,7 +367,7 @@ services:
     restart: unless-stopped
 YAML
 
-  cat > "${INITDB_DIR}/001_schema.sql" <<'SQL'
+  cat > "${INITDB_DIR}/001_schema.sql" <<SQL
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS unaccent;
 
@@ -355,14 +383,14 @@ CREATE TABLE IF NOT EXISTS docs (
   title        TEXT,
   content      TEXT NOT NULL,
   meta         JSONB DEFAULT '{}'::jsonb,
-  embedding    VECTOR(1536),
+  embedding    VECTOR(${EMBED_DIM}),
   tsv          TSVECTOR,
   UNIQUE(path, chunk_no)
 );
 
 CREATE TABLE IF NOT EXISTS emb_cache (
   chunk_hash   TEXT PRIMARY KEY,
-  embedding    VECTOR(1536) NOT NULL,
+  embedding    VECTOR(${EMBED_DIM}) NOT NULL,
   created_at   TIMESTAMPTZ DEFAULT now()
 );
 
@@ -405,21 +433,21 @@ CREATE TABLE IF NOT EXISTS qa_cache (
   created_at  TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE OR REPLACE FUNCTION docs_tsv_update() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION docs_tsv_update() RETURNS trigger AS \$\$
 BEGIN
   NEW.tsv := to_tsvector('portuguese', unaccent(coalesce(NEW.content, '')));
   RETURN NEW;
 END
-$$ LANGUAGE plpgsql;
+\$\$ LANGUAGE plpgsql;
 
-DO $$
+DO \$\$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'docs_tsv_update_tr') THEN
     CREATE TRIGGER docs_tsv_update_tr
     BEFORE INSERT OR UPDATE OF content ON docs
     FOR EACH ROW EXECUTE FUNCTION docs_tsv_update();
   END IF;
-END$$;
+END\$\$;
 
 CREATE INDEX IF NOT EXISTS docs_tsv_idx        ON docs USING GIN (tsv);
 CREATE INDEX IF NOT EXISTS docs_meta_gin       ON docs USING GIN (meta);
@@ -483,6 +511,7 @@ LOG_EVERY=${LOG_EVERY}
 GEN_MODEL=${GEN_MODEL}
 REASONING_EFFORT=${REASONING_EFFORT}
 EMBED_MODEL=${EMBED_MODEL}
+EMBED_DIM=${EMBED_DIM}
 EXPANSION_MODEL=${EXPANSION_MODEL}
 
 OCR_ENABLED=${OCR_ENABLED}
@@ -655,10 +684,11 @@ QA_CACHE_TTL_DAYS = int(os.getenv("QA_CACHE_TTL_DAYS","90"))
 FEEDBACK_ALPHA = float(os.getenv("FEEDBACK_ALPHA","0.15"))
 GLOSSARY_BOOST = float(os.getenv("GLOSSARY_BOOST","0.2"))
 NOTES_BOOST = float(os.getenv("NOTES_BOOST","0.35"))
-SQL_BASE = """
+EMBED_DIM = int(os.getenv("EMBED_DIM","1536"))
+SQL_BASE = f"""
 WITH q AS (
   SELECT websearch_to_tsquery('portuguese', %(q)s) AS tsq,
-         %(qvec)s::vector(1536) AS qvec
+         %(qvec)s::vector({EMBED_DIM}) AS qvec
 ),
 lex AS (
   SELECT id, ts_rank_cd(d.tsv, q.tsq) AS lscore
@@ -804,6 +834,7 @@ OCR_WORKERS = int(os.getenv("OCR_WORKERS","2"))
 EMBED_MODEL = os.getenv("EMBED_MODEL","text-embedding-3-small")
 EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE","256"))
 EMBED_TOKEN_BUDGET = int(os.getenv("EMBED_TOKEN_BUDGET","220000"))
+EMBED_DIM = int(os.getenv("EMBED_DIM","1536"))
 OCR_ENABLED = os.getenv("OCR_ENABLED","false").lower() == "true"
 LOG_LINES = int(os.getenv("LOG_LINES","5"))
 LOG_EVERY = int(os.getenv("LOG_EVERY","120"))
@@ -813,7 +844,7 @@ ALLOWED_EXT = {".pdf",".html",".htm",".xlsx",".xls",".txt"}
 def ensure_schema(conn):
     with conn.cursor() as cur:
         cur.execute("CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS unaccent;")
-        cur.execute("""
+        cur.execute(f"""
         CREATE TABLE IF NOT EXISTS docs (
           id BIGSERIAL PRIMARY KEY,
           path TEXT NOT NULL,
@@ -825,12 +856,12 @@ def ensure_schema(conn):
           mtime TIMESTAMPTZ,
           title TEXT,
           content TEXT NOT NULL,
-          meta JSONB DEFAULT '{}'::jsonb,
-          embedding VECTOR(1536),
+          meta JSONB DEFAULT '{{}}'::jsonb,
+          embedding VECTOR({EMBED_DIM}),
           tsv TSVECTOR,
           UNIQUE(path, chunk_no)
         );""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS emb_cache (chunk_hash TEXT PRIMARY KEY, embedding VECTOR(1536) NOT NULL, created_at TIMESTAMPTZ DEFAULT now());""")
+        cur.execute(f"""CREATE TABLE IF NOT EXISTS emb_cache (chunk_hash TEXT PRIMARY KEY, embedding VECTOR({EMBED_DIM}) NOT NULL, created_at TIMESTAMPTZ DEFAULT now());""")
         cur.execute("""CREATE TABLE IF NOT EXISTS file_inventory (path TEXT PRIMARY KEY, size_bytes BIGINT NOT NULL, mtime TIMESTAMPTZ NOT NULL, sha256 TEXT, last_seen TIMESTAMPTZ DEFAULT now());""")
         cur.execute("""
         CREATE OR REPLACE FUNCTION docs_tsv_update() RETURNS trigger AS $f$

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel, Field
 from typing import Optional
 import os
@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 import psycopg
+from pathlib import Path
 
 from search_answer import answer as answer_single
 from search_chat import chat_respond
@@ -13,6 +14,14 @@ from search_chat import chat_respond
 DB_URL = os.getenv("DATABASE_URL")
 APP_DIR = os.path.dirname(__file__)
 app = FastAPI(title="Sophia RAG API", version="1.1")
+ALLOW_FINETUNE = os.getenv("ALLOW_FINETUNE", "false").lower() == "true"
+FINETUNE_TOKEN = os.getenv("FINETUNE_TOKEN") or os.getenv("ADMIN_TOKEN")
+FINETUNE_HISTORY_FILE = Path(
+    os.getenv(
+        "FINETUNE_HISTORY",
+        os.path.join(os.getenv("FINETUNE_DIR", "finetune"), "history.jsonl"),
+    )
+)
 
 class AskIn(BaseModel):
     question: str
@@ -35,6 +44,30 @@ class FeedbackIn(BaseModel):
     query_hash: str
     doc_id: int = Field(gt=0)
     signal: int = Field(ge=-1, le=1)
+
+
+class FinetuneIn(BaseModel):
+    status: Optional[str] = None
+    watch: bool = False
+
+
+def _append_finetune_history(entry: dict) -> None:
+    if not entry:
+        return
+    if FINETUNE_HISTORY_FILE.exists():
+        try:
+            with FINETUNE_HISTORY_FILE.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        if json.loads(line).get("job_id") == entry.get("job_id"):
+                            return
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            pass
+    FINETUNE_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with FINETUNE_HISTORY_FILE.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 @app.get("/health")
 def health():
@@ -104,6 +137,39 @@ def feedback(inp: FeedbackIn):
     except psycopg.Error as exc:
         raise HTTPException(status_code=500, detail=f"DB error: {exc.pgerror or exc}") from exc
     return {"ok": True}
+
+
+@app.post("/finetune")
+def finetune(
+    inp: FinetuneIn,
+    x_admin_token: Optional[str] = Header(default=None, alias="x-admin-token"),
+):
+    if not ALLOW_FINETUNE:
+        raise HTTPException(status_code=403, detail="fine-tuning desabilitado")
+    expected_token = FINETUNE_TOKEN
+    if expected_token:
+        provided = x_admin_token or ""
+        if provided.startswith("Bearer "):
+            provided = provided.split(" ", 1)[1]
+        if provided != expected_token:
+            raise HTTPException(status_code=401, detail="token inválido")
+    cmd = [sys.executable, "-u", os.path.join(APP_DIR, "finetune.py")]
+    if inp.status:
+        cmd += ["--status", inp.status]
+    if inp.watch:
+        cmd.append("--watch")
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        detail = r.stderr.strip() or r.stdout.strip() or "erro ao executar finetune"
+        raise HTTPException(status_code=500, detail=detail)
+    try:
+        payload = json.loads(r.stdout.strip() or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"resposta inválida: {exc}") from exc
+    if not inp.status:
+        _append_finetune_history(payload.get("history_entry"))
+    return payload
+
 
 @app.get("/analysis")
 def analysis(path: Optional[str] = None, limit: int = 50):

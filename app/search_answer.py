@@ -1,7 +1,11 @@
 from pathlib import Path
+import logging
 import os
+from typing import List, Dict
+
 from dotenv import load_dotenv
 from openai import OpenAI
+
 from search_utils import (
     embed_query,
     expand_query,
@@ -21,6 +25,7 @@ REASONING_EFFORT = os.getenv("REASONING_EFFORT", "high")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
 TOPK = int(os.getenv("TOPK", "12"))
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+logger = logging.getLogger("sophia.answer")
 
 PROMPT = """
 Você é um analista jurídico-regulatório. Responda usando apenas o contexto abaixo.
@@ -48,9 +53,12 @@ def answer(question, k=TOPK, max_ctx_chars=20000, return_metadata=False):
         return
 
     variants = expand_query(question)
-    all_rows = []
+    all_rows: List[Dict] = []
     for v in variants:
         qvec = embed_query(v, os.getenv("EMBED_MODEL", "text-embedding-3-small"))
+        if qvec is None:
+            logger.warning("Não foi possível obter embedding para a variante da consulta: %s", v)
+            continue
         rows = retrieve_hybrid(v, qvec, k=k)
         all_rows.extend(rows)
     by_id = {r["id"]: r for r in all_rows}
@@ -79,20 +87,28 @@ def answer(question, k=TOPK, max_ctx_chars=20000, return_metadata=False):
             }
         )
     contexts = "\n---\n".join(blocks)
+    if not contexts:
+        contexts = "Não localizei documentos relevantes no momento."
     user_prompt = PROMPT.format(question=question, contexts=contexts)
-    resp = client.chat.completions.create(
-        model=GEN_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": "Responda tecnicamente, sem inventar fatos, e cite fontes.",
-            },
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.2,
-        reasoning={"effort": REASONING_EFFORT},
-    )
-    draft = resp.choices[0].message.content
+    try:
+        resp = client.chat.completions.create(
+            model=GEN_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Responda tecnicamente, sem inventar fatos, e cite fontes.",
+                },
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+            reasoning={"effort": REASONING_EFFORT},
+        )
+        draft = resp.choices[0].message.content or ""
+    except Exception as exc:  # pragma: no cover - fallback defensivo
+        logger.exception("Falha ao gerar resposta", exc_info=exc)
+        draft = (
+            "Não foi possível gerar uma resposta automática agora. Tente novamente em alguns instantes."
+        )
     final = self_rag_verify(draft, contexts)
     save_cache(question, final, cites)
 

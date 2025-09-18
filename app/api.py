@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Header
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional
 import os
@@ -22,6 +23,15 @@ FINETUNE_HISTORY_FILE = Path(
         os.path.join(os.getenv("FINETUNE_DIR", "finetune"), "history.jsonl"),
     )
 )
+PUBLIC_URL = (os.getenv("PUBLIC_URL") or os.getenv("API_URL") or "http://localhost:18888").rstrip("/")
+GPT_PLUGIN_NAME = os.getenv("GPT_PLUGIN_NAME", "Sophia RAG")
+GPT_PLUGIN_DESCRIPTION = os.getenv(
+    "GPT_PLUGIN_DESCRIPTION",
+    "Ferramenta de busca híbrida do Sophia para consultas regulatórias e jurídicas.",
+)
+GPT_CONTACT_EMAIL = os.getenv("GPT_CONTACT_EMAIL", "contato@example.com")
+GPT_LEGAL_URL = os.getenv("GPT_LEGAL_URL")
+GPT_LOGO_URL = os.getenv("GPT_LOGO_URL", f"{PUBLIC_URL}/static/logo.png")
 
 class AskIn(BaseModel):
     question: str
@@ -169,6 +179,28 @@ def finetune(
     if not inp.status:
         _append_finetune_history(payload.get("history_entry"))
     return payload
+
+
+@app.get("/.well-known/ai-plugin.json", include_in_schema=False)
+def gpt_manifest():
+    manifest = {
+        "schema_version": "v1",
+        "name_for_human": GPT_PLUGIN_NAME,
+        "name_for_model": "sophia_rag",
+        "description_for_human": GPT_PLUGIN_DESCRIPTION,
+        "description_for_model": "Utilize esta ferramenta para responder perguntas com base em documentos indexados pela Sophia.",
+        "auth": {"type": "none"},
+        "api": {
+            "type": "openapi",
+            "url": f"{PUBLIC_URL}/openapi.json",
+            "is_user_authenticated": False,
+        },
+        "contact_email": GPT_CONTACT_EMAIL,
+        "legal_info_url": GPT_LEGAL_URL,
+    }
+    if GPT_LOGO_URL:
+        manifest["logo_url"] = GPT_LOGO_URL
+    return JSONResponse({k: v for k, v in manifest.items() if v is not None})
 
 
 @app.get("/analysis")

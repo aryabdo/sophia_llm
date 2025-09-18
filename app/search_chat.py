@@ -1,9 +1,14 @@
 from pathlib import Path
+import logging
 import os
 import json
+from typing import List, Dict
+
 from dotenv import load_dotenv
 from openai import OpenAI
+
 from search_utils import (
+    embed_query,
     retrieve_hybrid,
     apply_glossary_boost,
     inject_notes,
@@ -21,13 +26,14 @@ SESS_DIR = Path("/opt/rag-sophia/sessions")
 SESS_DIR.mkdir(parents=True, exist_ok=True)
 SYSTEM = "Você é um assistente analítico. Baseie-se no contexto recuperado e no histórico. Cite fontes como [#n] + caminho."
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+logger = logging.getLogger("sophia.chat")
 
 def chat_respond(session_name: str, user_text: str):
     qhash = sha(user_text)
-    qvec = client.embeddings.create(model=EMBED_MODEL, input=user_text).data[0].embedding
+    qvec = embed_query(user_text, EMBED_MODEL)
     rows = retrieve_hybrid(user_text, qvec, k=TOPK)
     seen = set()
-    uniq = []
+    uniq: List[Dict] = []
     for r in rows:
         if r["id"] in seen:
             continue
@@ -57,18 +63,31 @@ def chat_respond(session_name: str, user_text: str):
             }
         )
     contexts = "\n---\n".join(blocks)
+    if not contexts:
+        contexts = (
+            "Nenhum documento relevante foi encontrado para complementar a análise agora."
+        )
     prompt = (
         f"Pergunta: \"{user_text}\"\n\nContexto recuperado:\n{contexts}\n\n"
         "Regras:\n- Seja específico e crítico.\n- Liste prós/contras quando fizer sentido.\n"
         "- Cite fontes como [#n] + caminho.\n- Se faltar base, diga o que falta."
     )
-    resp = client.chat.completions.create(
-        model=GEN_MODEL,
-        messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
-        temperature=0.2,
-        reasoning={"effort": REASONING_EFFORT},
-    )
-    draft = resp.choices[0].message.content or "(sem conteúdo)"
+    try:
+        resp = client.chat.completions.create(
+            model=GEN_MODEL,
+            messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
+            temperature=0.2,
+            reasoning={"effort": REASONING_EFFORT},
+        )
+        draft = resp.choices[0].message.content or "(sem conteúdo)"
+    except Exception as exc:  # pragma: no cover - fallback defensivo
+        logger.exception("Falha ao gerar resposta do chat", exc_info=exc)
+        return (
+            "No momento não foi possível gerar uma resposta automática. Tente novamente em instantes.",
+            cites,
+            qhash,
+        )
+
     final = self_rag_verify(draft, contexts)
     return final, cites, qhash
 

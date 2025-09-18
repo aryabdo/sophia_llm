@@ -61,6 +61,18 @@ class FinetuneIn(BaseModel):
     watch: bool = False
 
 
+class FinetuneExportOut(BaseModel):
+    ok: bool
+    train: str
+    val: str
+    n: int
+    val_split: int
+
+
+class UseModelIn(BaseModel):
+    model_id: str
+
+
 def _append_finetune_history(entry: dict) -> None:
     if not entry:
         return
@@ -179,6 +191,62 @@ def finetune(
     if not inp.status:
         _append_finetune_history(payload.get("history_entry"))
     return payload
+
+
+@app.post("/finetune/export")
+def finetune_export():
+    r = subprocess.run(
+        [sys.executable, "-u", os.path.join(APP_DIR, "finetune_export.py")],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        raise HTTPException(status_code=500, detail=r.stderr.strip())
+    try:
+        return json.loads(r.stdout.strip())
+    except Exception:
+        return {"ok": True, "raw": r.stdout.strip()}
+
+
+@app.post("/finetune/start")
+def finetune_start():
+    r = subprocess.run(
+        [sys.executable, "-u", os.path.join(APP_DIR, "finetune_openai.py")],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        raise HTTPException(status_code=500, detail=r.stderr.strip())
+    try:
+        return json.loads(r.stdout.strip())
+    except Exception:
+        return {"ok": True, "raw": r.stdout.strip()}
+
+
+@app.post("/finetune/use_model")
+def use_model(inp: UseModelIn):
+    r = subprocess.run(
+        [sys.executable, "-u", os.path.join(APP_DIR, "model_registry.py"), "use", inp.model_id],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        raise HTTPException(status_code=500, detail=r.stderr.strip())
+    os.system("systemctl restart sophia-api >/dev/null 2>&1 || true")
+    return {"ok": True, "registry": r.stdout.strip()}
+
+
+@app.post("/finetune/rollback")
+def rollback_model():
+    r = subprocess.run(
+        [sys.executable, "-u", os.path.join(APP_DIR, "model_registry.py"), "rollback"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        raise HTTPException(status_code=500, detail=r.stderr.strip())
+    os.system("systemctl restart sophia-api >/dev/null 2>&1 || true")
+    return {"ok": True, "registry": r.stdout.strip()}
 
 
 @app.get("/.well-known/ai-plugin.json", include_in_schema=False)

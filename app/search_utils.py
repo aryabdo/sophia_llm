@@ -37,31 +37,31 @@ WITH q AS (
   SELECT websearch_to_tsquery('portuguese', %(q)s) AS tsq,
          %(qvec)s::vector({EMBED_DIM}) AS qvec
 ),
-lex AS (
+lexical AS (
   SELECT id, ts_rank_cd(d.tsv, q.tsq) AS lscore
   FROM docs d, q
   WHERE d.tsv @@ q.tsq
   ORDER BY lscore DESC
   LIMIT 300
 ),
-vec AS (
+vectorial AS (
   SELECT id, 1 - (d.embedding <=> q.qvec) AS vscore
   FROM docs d, q
   WHERE d.embedding IS NOT NULL
   ORDER BY d.embedding <=> q.qvec
   LIMIT 300
 ),
-u AS (
-  SELECT COALESCE(lex.id, vec.id) AS id,
-         COALESCE(lex.lscore, 0) AS lscore,
-         COALESCE(vec.vscore, 0) AS vscore
-  FROM lex
-  FULL OUTER JOIN vec ON lex.id = vec.id
+merged AS (
+  SELECT COALESCE(l.id, v.id) AS id,
+         COALESCE(l.lscore, 0) AS lscore,
+         COALESCE(v.vscore, 0) AS vscore
+  FROM lexical l
+  FULL OUTER JOIN vectorial v ON l.id = v.id
 ),
 joined AS (
   SELECT d.id, d.path, d.chunk_no, d.title, d.meta, d.content,
          (0.6 * lscore + 0.4 * vscore) AS base_score
-  FROM u JOIN docs d ON d.id = u.id
+  FROM merged JOIN docs d ON d.id = merged.id
 ),
 fb AS (
   SELECT doc_id, SUM(signal)::REAL AS fscore FROM feedback GROUP BY doc_id

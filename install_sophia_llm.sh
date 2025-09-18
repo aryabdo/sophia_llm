@@ -105,24 +105,146 @@ API_PORT="${DEFAULT_API_PORT}"
 #============================== UI (dialog/whiptail) =========================#
 need_root(){ [[ $EUID -eq 0 ]] || { echo "Execute como root: sudo $0"; exit 1; }; }
 UI_BIN=""
+UI_MODE="tui"
 ui_detect(){
-  if command -v dialog >/dev/null 2>&1; then UI_BIN="dialog"; return; fi
-  if command -v whiptail >/dev/null 2>&1; then UI_BIN="whiptail"; return; fi
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    UI_MODE="cli"
+    return
+  fi
+  if command -v dialog >/dev/null 2>&1; then UI_BIN="dialog"; UI_MODE="dialog"; return; fi
+  if command -v whiptail >/dev/null 2>&1; then UI_BIN="whiptail"; UI_MODE="whiptail"; return; fi
+  printf '\n[Aviso] Preparando utilitários de interface (dialog/whiptail)...\n'
   apt-get update -y >/dev/null 2>&1 || true
   DEBIAN_FRONTEND=noninteractive apt-get install -y dialog whiptail >/dev/null 2>&1 || true
-  if command -v dialog >/dev/null 2>&1; then UI_BIN="dialog"; else UI_BIN="whiptail"; fi
+  if command -v dialog >/dev/null 2>&1; then
+    UI_BIN="dialog"; UI_MODE="dialog"; return
+  fi
+  if command -v whiptail >/dev/null 2>&1; then
+    UI_BIN="whiptail"; UI_MODE="whiptail"; return
+  fi
+  UI_MODE="cli"
 }
-msgbox(){ if [[ "$UI_BIN" == "dialog" ]]; then dialog --colors --mouse --scrollbar --msgbox "$1" 12 78; else whiptail --msgbox "$1" 12 78; fi; }
-inputbox(){ if [[ "$UI_BIN" == "dialog" ]]; then dialog --mouse --inputbox "$2" 10 78 "$3" --title "$1" 2>/.tmp.inp || return 1; cat /.tmp.inp; else whiptail --inputbox "$2" 10 78 "$3" --title "$1" 3>&1 1>&2 2>&3; fi }
-yesno(){ if [[ "$UI_BIN" == "dialog" ]]; then dialog --mouse --yesno "$1" 10 78; else whiptail --yesno "$1" 10 78; fi }
-menu(){ shift; local text="$1"; shift; if [[ "$UI_BIN" == "dialog" ]]; then dialog --mouse --menu "$text" 20 78 12 "$@" 2>/.tmp.sel || return 1; cat /.tmp.sel; else whiptail --menu "$text" 20 78 12 "$@" 3>&1 1>&2 2>&3; fi }
-gauge(){ if [[ "$UI_BIN" == "dialog" ]]; then dialog --mouse --gauge "$1" 18 90 0; else whiptail --gauge "$1" 18 90 0; fi }
+msgbox(){
+  if [[ "$UI_MODE" == "dialog" ]]; then
+    dialog --colors --mouse --scrollbar --msgbox "$1" 12 78
+    return
+  fi
+  if [[ "$UI_MODE" == "whiptail" ]]; then
+    whiptail --msgbox "$1" 12 78
+    return
+  fi
+  printf '\n%s\n' "$1"
+  read -r -p "[Enter] para continuar..." _dummy
+}
+inputbox(){
+  if [[ "$UI_MODE" == "dialog" ]]; then
+    dialog --mouse --inputbox "$2" 10 78 "$3" --title "$1" 2>/.tmp.inp || return 1
+    cat /.tmp.inp
+    return
+  fi
+  if [[ "$UI_MODE" == "whiptail" ]]; then
+    whiptail --inputbox "$2" 10 78 "$3" --title "$1" 3>&1 1>&2 2>&3
+    return
+  fi
+  local ans
+  printf '\n[%s]\n%s\nValor padrão: %s\n> ' "$1" "$2" "$3"
+  read -r ans
+  if [[ -z "$ans" ]]; then
+    printf '%s\n' "$3"
+  else
+    printf '%s\n' "$ans"
+  fi
+}
+yesno(){
+  if [[ "$UI_MODE" == "dialog" ]]; then
+    dialog --mouse --yesno "$1" 10 78
+    return
+  fi
+  if [[ "$UI_MODE" == "whiptail" ]]; then
+    whiptail --yesno "$1" 10 78
+    return
+  fi
+  local ans
+  while true; do
+    read -r -p "$1 [s/N]: " ans
+    case "${ans,,}" in
+      s|sim|y|yes) return 0 ;;
+      n|nao|não|no|"" ) return 1 ;;
+      *) echo "Responda com s ou n." ;;
+    esac
+  done
+}
+menu(){
+  shift
+  local text="$1"; shift
+  if [[ "$UI_MODE" == "dialog" ]]; then
+    dialog --mouse --menu "$text" 20 78 12 "$@" 2>/.tmp.sel || return 1
+    cat /.tmp.sel
+    return
+  fi
+  if [[ "$UI_MODE" == "whiptail" ]]; then
+    whiptail --menu "$text" 20 78 12 "$@" 3>&1 1>&2 2>&3
+    return
+  fi
+  local options=()
+  while (( "$#" )); do
+    local tag="$1"; shift
+    local desc="$1"; shift
+    options+=("$tag" "$desc")
+  done
+  echo "$text"
+  for ((i=0; i<${#options[@]}; i+=2)); do
+    printf '  [%s] %s\n' "${options[i]}" "${options[i+1]}"
+  done
+  local choice
+  read -r -p "Escolha: " choice
+  printf '%s\n' "$choice"
+}
+gauge(){
+  if [[ "$UI_MODE" == "dialog" ]]; then
+    dialog --mouse --gauge "$1" 18 90 0
+    return
+  fi
+  if [[ "$UI_MODE" == "whiptail" ]]; then
+    whiptail --gauge "$1" 18 90 0
+    return
+  fi
+  local line
+  while IFS= read -r line; do
+    if [[ "$line" == \#* ]]; then
+      echo "${line#\# }"
+    fi
+  done
+}
 
 #============================== HELPERS ======================================#
 random_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16; }
-run_step(){ local title="$1"; shift; local log="/tmp/sophia_step.log"; :> "$log"; ( "$@" >>"$log" 2>&1 ) & local pid=$!
+run_step(){
+  local title="$1"; shift
+  local log="/tmp/sophia_step.log"
+  :> "$log"
+  ( "$@" >>"$log" 2>&1 ) &
+  local pid=$!
+  if [[ "$UI_MODE" == "cli" ]]; then
+    echo "== $title =="
+    tail -n0 -f "$log" &
+    local tail_pid=$!
+    wait $pid
+    local status=$?
+    kill $tail_pid 2>/dev/null || true
+    wait $tail_pid 2>/dev/null || true
+    if (( status != 0 )); then
+      local out="$(sed 's/\x1b\[[0-9;]*m//g' "$log" | tail -n 200)"
+      msgbox "Falha em: $title\n\n$out"
+      return 1
+    fi
+    echo "-- Finalizado: $title"
+    return 0
+  fi
   ( p=1; while kill -0 $pid 2>/dev/null; do echo $p; echo "# $title"; tail -n 5 "$log" 2>/dev/null; p=$(( (p+5) % 95 )); sleep 1; done; echo 100; echo "# Finalizado." ) | gauge "$title"
-  wait $pid || { local out="$(sed 's/\x1b\[[0-9;]*m//g' "$log" | tail -n 200)"; msgbox "Falha em: $title\n\n$out"; return 1; }; return 0; }
+  wait $pid || { local out="$(sed 's/\x1b\[[0-9;]*m//g' "$log" | tail -n 200)"; msgbox "Falha em: $title\n\n$out"; return 1; }
+  return 0
+}
 
 #============================= PRÉ-REQUISITOS/APT ============================#
 apt_fix_and_install(){

@@ -6,9 +6,27 @@ APP="$BASE/app"
 SESSION="${1:-sess_$(date +%Y%m%d_%H%M%S)}"
 LAST_RESULT_JSON=""
 API_ENDPOINT=""
+LOG_DIR="$BASE/logs"
+SAFE_SESSION="${SESSION//[^A-Za-z0-9_]/_}"
+CHAT_LOG="$LOG_DIR/chat_${SAFE_SESSION}_$(date +%Y%m%d_%H%M%S).log"
+
+mkdir -p "$LOG_DIR"
+
+timestamp(){
+  date '+%Y-%m-%d %H:%M:%S'
+}
+
+log_line(){
+  printf '[%s] %s\n' "$(timestamp)" "$1" >>"$CHAT_LOG"
+}
 
 ensure_api_key(){
-  . "$APP/.env"
+  if [[ -f "$APP/.env" ]]; then
+    set +u
+    # shellcheck disable=SC1090
+    . "$APP/.env"
+    set -u
+  fi
   if [[ -z "${OPENAI_API_KEY:-}" ]]; then
     if command -v dialog >/dev/null 2>&1; then
       dialog --inputbox "Informe sua OPENAI_API_KEY" 10 70 "" 2>/.tmp.key || exit 1
@@ -18,6 +36,7 @@ ensure_api_key(){
     fi
     [[ -z "$KEY" ]] && exit 1
     sed -i "s/^OPENAI_API_KEY=.*/OPENAI_API_KEY=$KEY/" "$APP/.env"
+    log_line "OPENAI_API_KEY atualizado via interface"
   fi
 }
 
@@ -43,6 +62,16 @@ show_alert(){
   else
     whiptail --title "$title" --msgbox "$body" 12 80
   fi
+}
+
+show_progress(){
+  local message="$1"
+  if command -v dialog >/dev/null 2>&1; then
+    dialog --infobox "$message" 7 70
+  else
+    whiptail --infobox "$message" 7 70
+  fi
+  sleep 1
 }
 
 detect_api_url(){
@@ -80,10 +109,19 @@ send_question(){
     q=$(whiptail --inputbox "Digite sua pergunta" 12 78 --title "💬 Nova pergunta" 3>&1 1>&2 2>&3) || return
   fi
   [[ -z "$q" ]] && return
+  log_line "Pergunta enviada: $q"
   tmp="$(mktemp)"
   cd "$APP"
   source .venv/bin/activate
-  export $(grep -v '^#' .env | xargs -d '\n' -I{} echo {} | sed 's/\r$//')
+  if [[ -f .env ]]; then
+    set +u
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+    set -u
+  fi
+  show_progress "Consultando Sophia..."
   python -u - "$SESSION" "$q" > "$tmp" 2>&1 <<'PY'
 import sys, json
 from search_chat import chat_respond
@@ -93,9 +131,11 @@ PY
   if jq -e . >/dev/null 2>&1 <"$tmp"; then
     LAST_RESULT_JSON="$(cat "$tmp")"
     ans="$(printf '%s' "$LAST_RESULT_JSON" | jq -r '.answer' 2>/dev/null)"
+    log_line "Resposta recebida: ${ans//$'\n'/ }"
   else
     LAST_RESULT_JSON=""
     ans="$(tail -n 200 "$tmp")"
+    log_line "Falha ao obter resposta: ${ans//$'\n'/ }"
   fi
   [[ -z "$ans" ]] && ans="(sem resposta / verifique logs)"
   show_box "🤖 Resposta" "$ans"
@@ -175,8 +215,10 @@ send_feedback(){
   rm -f "$tmp_resp"
   if [[ "$http_code" =~ ^2 && ( -z "$body" || $(printf '%s' "$body" | jq -r '.ok // empty' 2>/dev/null) == "true" ) ]]; then
     show_alert "Feedback" "Obrigado! Feedback registrado."
+    log_line "Feedback enviado para doc $selected com sinal $signal"
   else
     show_alert "Feedback" "Erro ${http_code}: ${body:-sem resposta}"
+    log_line "Erro ao enviar feedback (HTTP ${http_code}): ${body:-sem resposta}"
   fi
 }
 

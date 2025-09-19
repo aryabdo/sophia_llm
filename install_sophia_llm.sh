@@ -63,45 +63,91 @@ DEFAULT_FINETUNE_BASE="gpt-4o-mini"
 DEFAULT_API_PORT="${API_PORT_DEFAULT}"
 
 #============================== VARIÁVEIS ====================================#
-OPENAI_API_KEY=""
-DATA_DIR="${DEFAULT_DATA_DIR}"
-DB_USER="${DEFAULT_DB_USER}"
-DB_NAME="${DEFAULT_DB_NAME}"
-DB_PORT="${DEFAULT_DB_PORT}"
-DB_PASS=""
-GEN_MODEL="${DEFAULT_GEN_MODEL}"
-REASONING_EFFORT="${DEFAULT_REASONING_EFFORT}"
-EMBED_MODEL="${DEFAULT_EMBED_MODEL}"
-EXPANSION_MODEL="${DEFAULT_EXPANSION_MODEL}"
-CHUNK_TOKENS="${DEFAULT_CHUNK_TOKENS}"
-CHUNK_OVERLAP="${DEFAULT_CHUNK_OVERLAP}"
-MAX_WORKERS="${DEFAULT_MAX_WORKERS}"
-OCR_WORKERS="${DEFAULT_OCR_WORKERS}"
-EMBED_BATCH_SIZE="${DEFAULT_EMBED_BATCH_SIZE}"
-EMBED_TOKEN_BUDGET="${DEFAULT_EMBED_TOKEN_BUDGET}"
-LOG_LINES="${DEFAULT_LOG_LINES}"
-LOG_EVERY="${DEFAULT_LOG_EVERY}"
-UFW_CIDR="${DEFAULT_UFW_CIDR}"
-OCR_ENABLED="true"
-OCR_LANGS="por+eng"
-OCR_DPI="200"
-OCR_MAX_PAGES="8"
-DELTA_MODE="${DEFAULT_DELTA_MODE}"
-SKIP_SMOKE_TEST="${DEFAULT_SKIP_SMOKE_TEST}"
-PDF_SAMPLE_PAGES="${DEFAULT_PDF_SAMPLE_PAGES}"
-TOPK="${DEFAULT_TOPK}"
-EXPANSIONS="${DEFAULT_EXPANSIONS}"
-RERANK_TOP="${DEFAULT_RERANK_TOP}"
-SELF_RAG="${DEFAULT_SELF_RAG}"
-USE_QA_CACHE="${DEFAULT_USE_QA_CACHE}"
-QA_CACHE_TTL_DAYS="${DEFAULT_QA_CACHE_TTL_DAYS}"
-FEEDBACK_ALPHA="${DEFAULT_FEEDBACK_ALPHA}"
-GLOSSARY_BOOST="${DEFAULT_GLOSSARY_BOOST}"
-NOTES_BOOST="${DEFAULT_NOTES_BOOST}"
-ALLOW_FINETUNE="${DEFAULT_ALLOW_FINETUNE}"
-FINETUNE_BASE="${DEFAULT_FINETUNE_BASE}"
-API_PORT="${DEFAULT_API_PORT}"
-EMBED_DIM=""
+: "${OPENAI_API_KEY:=}"
+: "${DATA_DIR:=${DEFAULT_DATA_DIR}}"
+: "${DB_USER:=${DEFAULT_DB_USER}}"
+: "${DB_NAME:=${DEFAULT_DB_NAME}}"
+: "${DB_PORT:=${DEFAULT_DB_PORT}}"
+: "${DB_PASS:=}"
+: "${GEN_MODEL:=${DEFAULT_GEN_MODEL}}"
+: "${REASONING_EFFORT:=${DEFAULT_REASONING_EFFORT}}"
+: "${EMBED_MODEL:=${DEFAULT_EMBED_MODEL}}"
+: "${EXPANSION_MODEL:=${DEFAULT_EXPANSION_MODEL}}"
+: "${CHUNK_TOKENS:=${DEFAULT_CHUNK_TOKENS}}"
+: "${CHUNK_OVERLAP:=${DEFAULT_CHUNK_OVERLAP}}"
+: "${MAX_WORKERS:=${DEFAULT_MAX_WORKERS}}"
+: "${OCR_WORKERS:=${DEFAULT_OCR_WORKERS}}"
+: "${EMBED_BATCH_SIZE:=${DEFAULT_EMBED_BATCH_SIZE}}"
+: "${EMBED_TOKEN_BUDGET:=${DEFAULT_EMBED_TOKEN_BUDGET}}"
+: "${LOG_LINES:=${DEFAULT_LOG_LINES}}"
+: "${LOG_EVERY:=${DEFAULT_LOG_EVERY}}"
+: "${UFW_CIDR:=${DEFAULT_UFW_CIDR}}"
+: "${OCR_ENABLED:=true}"
+: "${OCR_LANGS:=por+eng}"
+: "${OCR_DPI:=200}"
+: "${OCR_MAX_PAGES:=8}"
+: "${DELTA_MODE:=${DEFAULT_DELTA_MODE}}"
+: "${SKIP_SMOKE_TEST:=${DEFAULT_SKIP_SMOKE_TEST}}"
+: "${PDF_SAMPLE_PAGES:=${DEFAULT_PDF_SAMPLE_PAGES}}"
+: "${TOPK:=${DEFAULT_TOPK}}"
+: "${EXPANSIONS:=${DEFAULT_EXPANSIONS}}"
+: "${RERANK_TOP:=${DEFAULT_RERANK_TOP}}"
+: "${SELF_RAG:=${DEFAULT_SELF_RAG}}"
+: "${USE_QA_CACHE:=${DEFAULT_USE_QA_CACHE}}"
+: "${QA_CACHE_TTL_DAYS:=${DEFAULT_QA_CACHE_TTL_DAYS}}"
+: "${FEEDBACK_ALPHA:=${DEFAULT_FEEDBACK_ALPHA}}"
+: "${GLOSSARY_BOOST:=${DEFAULT_GLOSSARY_BOOST}}"
+: "${NOTES_BOOST:=${DEFAULT_NOTES_BOOST}}"
+: "${ALLOW_FINETUNE:=${DEFAULT_ALLOW_FINETUNE}}"
+: "${FINETUNE_BASE:=${DEFAULT_FINETUNE_BASE}}"
+: "${API_PORT:=${DEFAULT_API_PORT}}"
+: "${EMBED_DIM:=}"
+
+#=========================== EXECUÇÃO AUTOMÁTICA =============================#
+: "${AUTO_MODE:=false}"
+: "${AUTO_OPEN_MENU:=false}"
+: "${AUTO_ENV_FILE:=}"
+: "${AUTO_ASSUME_YES:=false}"
+
+CONFIG_VARS=(
+  OPENAI_API_KEY DATA_DIR DB_USER DB_NAME DB_PORT DB_PASS GEN_MODEL REASONING_EFFORT
+  EMBED_MODEL EXPANSION_MODEL CHUNK_TOKENS CHUNK_OVERLAP MAX_WORKERS OCR_WORKERS
+  EMBED_BATCH_SIZE EMBED_TOKEN_BUDGET LOG_LINES LOG_EVERY UFW_CIDR OCR_ENABLED
+  OCR_LANGS OCR_DPI OCR_MAX_PAGES DELTA_MODE SKIP_SMOKE_TEST PDF_SAMPLE_PAGES
+  TOPK EXPANSIONS RERANK_TOP SELF_RAG USE_QA_CACHE QA_CACHE_TTL_DAYS FEEDBACK_ALPHA
+  GLOSSARY_BOOST NOTES_BOOST ALLOW_FINETUNE FINETUNE_BASE API_PORT EMBED_DIM
+)
+
+auto_log(){ printf '[AUTO] %s\n' "$1"; }
+
+load_env_like(){
+  local file="$1"
+  if [[ -f "$file" ]]; then
+    set +u
+    # shellcheck disable=SC1090
+    source "$file"
+    set -u
+    return 0
+  fi
+  return 1
+}
+
+apply_config_overrides(){
+  local var
+  for var in "${CONFIG_VARS[@]}"; do
+    if [[ -n "${!var:-}" ]]; then
+      printf -v "$var" '%s' "${!var}"
+    fi
+  done
+}
+
+ensure_auto_defaults(){
+  if [[ -z "$DB_PASS" ]]; then
+    DB_PASS="$(random_pass)"
+  fi
+  [[ -n "$API_PORT" ]] || API_PORT="${API_PORT_DEFAULT}"
+  ensure_embed_dim "$EMBED_MODEL"
+}
 
 declare -A EMBED_MODEL_DIM_MAP=(
   ["text-embedding-3-small"]="1536"
@@ -152,6 +198,10 @@ ui_detect(){
   UI_MODE="cli"
 }
 msgbox(){
+  if [[ "${AUTO_MODE}" == "true" ]]; then
+    printf '\n%s\n' "$1"
+    return
+  fi
   if [[ "$UI_MODE" == "dialog" ]]; then
     dialog --colors --mouse --scrollbar --msgbox "$1" 12 78
     return
@@ -161,9 +211,15 @@ msgbox(){
     return
   fi
   printf '\n%s\n' "$1"
-  read -r -p "[Enter] para continuar..." _dummy
+  if [[ "${AUTO_MODE}" != "true" ]]; then
+    read -r -p "[Enter] para continuar..." _dummy
+  fi
 }
 inputbox(){
+  if [[ "${AUTO_MODE}" == "true" ]]; then
+    printf '%s\n' "$3"
+    return 0
+  fi
   if [[ "$UI_MODE" == "dialog" ]]; then
     dialog --mouse --inputbox "$2" 10 78 "$3" --title "$1" 2>/.tmp.inp || return 1
     cat /.tmp.inp
@@ -183,6 +239,10 @@ inputbox(){
   fi
 }
 yesno(){
+  if [[ "${AUTO_MODE}" == "true" ]]; then
+    [[ "${AUTO_ASSUME_YES}" == "true" ]]
+    return
+  fi
   if [[ "$UI_MODE" == "dialog" ]]; then
     dialog --mouse --yesno "$1" 10 78
     return
@@ -204,6 +264,10 @@ yesno(){
 menu(){
   shift
   local text="$1"; shift
+  if [[ "${AUTO_MODE}" == "true" ]]; then
+    printf '%s\n' "${1:-}"
+    return 0
+  fi
   if [[ "$UI_MODE" == "dialog" ]]; then
     dialog --mouse --menu "$text" 20 78 12 "$@" 2>/.tmp.sel || return 1
     cat /.tmp.sel
@@ -228,6 +292,15 @@ menu(){
   printf '%s\n' "$choice"
 }
 gauge(){
+  if [[ "${AUTO_MODE}" == "true" ]]; then
+    local line
+    while IFS= read -r line; do
+      if [[ "$line" == \#* ]]; then
+        printf '%s\n' "${line#\# }"
+      fi
+    done
+    return
+  fi
   if [[ "$UI_MODE" == "dialog" ]]; then
     dialog --mouse --gauge "$1" 18 90 0
     return
@@ -277,8 +350,13 @@ run_step(){
 apt_fix_and_install(){
   local holds; holds="$(apt-mark showhold 2>/dev/null || true)"
   if [[ -n "$holds" ]]; then
-    local opt; opt="$(menu "Pacotes em HOLD" "Encontrados:\n$holds\nEscolha:" C "Corrigir (remover HOLD e ajustar)" I "Ignorar e continuar" X "Cancelar")" || opt="X"
-    case "$opt" in C) apt-mark unhold $holds >/dev/null 2>&1 || true ;; I) : ;; X) return 1 ;; esac
+    if [[ "${AUTO_MODE}" == "true" ]]; then
+      auto_log "Pacotes em HOLD detectados: ${holds//$'\n'/, }. Removendo..."
+      apt-mark unhold $holds >/dev/null 2>&1 || true
+    else
+      local opt; opt="$(menu "Pacotes em HOLD" "Encontrados:\n$holds\nEscolha:" C "Corrigir (remover HOLD e ajustar)" I "Ignorar e continuar" X "Cancelar")" || opt="X"
+      case "$opt" in C) apt-mark unhold $holds >/dev/null 2>&1 || true ;; I) : ;; X) return 1 ;; esac
+    fi
   fi
   run_step "Instalando/ajustando pacotes (APT)..." bash -lc '
     set -u
@@ -1927,6 +2005,46 @@ first_run_installer(){
   "${BASE_DIR}/menu.sh" || true
 }
 
+auto_install(){
+  auto_log "Modo automático iniciado."
+  if [[ -n "$AUTO_ENV_FILE" ]]; then
+    if load_env_like "$AUTO_ENV_FILE"; then
+      auto_log "Configurações carregadas de $AUTO_ENV_FILE."
+    else
+      auto_log "Arquivo $AUTO_ENV_FILE não encontrado; usando padrões/variáveis atuais."
+    fi
+  fi
+  if load_env_like "${APP_DIR}/.env"; then
+    auto_log "Detectado arquivo existente em ${APP_DIR}/.env. Valores reaproveitados."
+  fi
+  apply_config_overrides
+  ensure_auto_defaults
+  if [[ -z "$OPENAI_API_KEY" ]]; then
+    echo "[AUTO] ERRO: defina OPENAI_API_KEY (variável de ambiente ou arquivo)." >&2
+    return 1
+  fi
+  auto_log "Gravando arquivos de configuração."
+  if ! write_files; then
+    echo "[AUTO] ERRO: não foi possível gravar arquivos básicos." >&2
+    return 1
+  fi
+  auto_log "Instalando dependências do sistema (APT)."
+  if ! apt_fix_and_install; then
+    auto_log "Aviso: etapa APT retornou erro. Continuando mesmo assim."
+  fi
+  auto_log "Configurando ambiente Python, banco e serviços."
+  if ! bring_up_stack; then
+    echo "[AUTO] ERRO: falha ao subir stack principal." >&2
+    return 1
+  fi
+  auto_log "Instalação automática concluída."
+  if [[ "${AUTO_OPEN_MENU}" == "true" ]]; then
+    auto_log "Abrindo painel (menu.sh)."
+    "${BASE_DIR}/menu.sh" || auto_log "Aviso: menu.sh retornou código $?"
+  fi
+  return 0
+}
+
 #============================== MENU INICIAL =================================#
 main_menu(){
   while true; do
@@ -1943,7 +2061,64 @@ main_menu(){
 }
 
 #==================================== RUN ====================================#
+show_usage(){
+  cat <<'EOF'
+Uso: install_sophia_llm.sh [opções]
+
+Opções principais:
+  --auto                  Executa instalação completa sem interação (usa variáveis atuais).
+  --auto-open-menu        Como --auto, mas abre o painel (menu.sh) ao final.
+  --auto-env <arquivo>    Carrega variáveis de ambiente adicionais desse arquivo antes de instalar.
+  --auto-assume-yes       Em modo automático, assume "Sim" para perguntas (ex.: habilitar UFW).
+  -h, --help              Mostra esta ajuda.
+EOF
+}
+
+parse_args(){
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --auto)
+        AUTO_MODE=true
+        ;;
+      --auto-open-menu)
+        AUTO_MODE=true
+        AUTO_OPEN_MENU=true
+        ;;
+      --auto-env)
+        AUTO_ENV_FILE="${2:-}"
+        if [[ -z "$AUTO_ENV_FILE" ]]; then
+          echo "Opção --auto-env requer um caminho." >&2
+          exit 1
+        fi
+        shift
+        ;;
+      --auto-assume-yes)
+        AUTO_ASSUME_YES=true
+        ;;
+      -h|--help)
+        show_usage
+        exit 0
+        ;;
+      *)
+        echo "Opção desconhecida: $1" >&2
+        show_usage >&2
+        exit 1
+        ;;
+    esac
+    shift
+  done
+}
+
+parse_args "$@"
 need_root
-ui_detect
+if [[ "$AUTO_MODE" == "true" ]]; then
+  UI_MODE="cli"
+else
+  ui_detect
+fi
 mkdir -p "${BASE_DIR}" "${APP_DIR}"
+if [[ "$AUTO_MODE" == "true" ]]; then
+  auto_install
+  exit $?
+fi
 main_menu

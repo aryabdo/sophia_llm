@@ -2,6 +2,26 @@
 
 Pipeline de RAG/Fine-tuning para acompanhar conhecimento interno.
 
+## Instalação automática
+
+O instalador principal (`install_sophia_llm.sh`) agora aceita o modo totalmente
+automático, útil para pipelines de provisionamento ou ambientes sem TTY.
+
+```bash
+sudo OPENAI_API_KEY="minha-chave" ./install_sophia_llm.sh --auto
+```
+
+Opções adicionais:
+
+* `--auto-env caminho.env` – Carrega variáveis extras antes de instalar
+  (formato `KEY=VAL`).
+* `--auto-open-menu` – Após instalar, abre o painel interativo.
+* `--auto-assume-yes` – Responde “Sim” automaticamente para prompts
+  (ex.: habilitar UFW).
+
+Caso nenhuma senha do Postgres seja informada (`DB_PASS`), o script gera uma
+senha aleatória automaticamente.
+
 ## Preparando dados para fine-tuning
 
 1. **Exporte conversas e feedbacks** que devem compor o conjunto de treino.
